@@ -24,15 +24,26 @@ import numpy as np
 import pandas as pd
 from streamlit_option_menu import option_menu
 
+# ── [AUTH] Import authentication and database modules ─────────────────────────
+from auth import (
+    init_session, is_authenticated,
+    current_user_id, current_user_email,
+    render_auth_page, render_sidebar_user_widget,
+)
+import db as database
+
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE CONFIGURATION
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Multi Diseases prediction using SHAP",
+    page_title="Multi Disease Prediction Using SHAP",
     layout="wide",
     page_icon="🩺",
     initial_sidebar_state="expanded",
 )
+
+# ── [AUTH] Initialise session state keys before anything else ─────────────────
+init_session()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CUSTOM CSS — Clean medical aesthetic with clear typography
@@ -265,59 +276,25 @@ models = load_models()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ── PREDICTION HISTORY ENGINE  [NEW]  ────────────────────────────────────────
-# Storage: JSON file alongside app.py — created automatically on first save.
-# Schema per record:
-#   {
-#     "timestamp":    "2025-03-30 14:22:05",
-#     "disease":      "Diabetes",
-#     "prediction":   "Yes",
-#     "key_reasons":  "Blood Glucose Level (strongly↑), Age (moderately↑)",
-#     "input_values": {"Glucose": 166, "BMI": 25.8, ...}
-#   }
+# ── PREDICTION HISTORY ENGINE  [UPDATED → Supabase]  ─────────────────────────
+# Old JSON-based functions are replaced by thin wrappers around db.py.
+# build_history_record() is unchanged — it still assembles the record dict.
+# save_history() and load_history() now talk to Supabase instead of a file.
 # ─────────────────────────────────────────────────────────────────────────────
 
-HISTORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prediction_history.json")
-
-
 def load_history() -> list[dict]:
-    """
-    Load all prediction records from the JSON file.
-    Returns an empty list if the file does not exist or is corrupted —
-    so the app never crashes on a missing / empty file.
-    """
-    if not os.path.exists(HISTORY_FILE):
-        return []
-    try:
-        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, list) else []
-    except (json.JSONDecodeError, OSError):
-        return []
+    """Fetch current user's predictions from Supabase (newest first)."""
+    return database.load_history(current_user_id())
 
 
 def save_history(record: dict) -> None:
-    """
-    Append one prediction record to the JSON history file.
-    Creates the file automatically if it does not exist.
-    Silently skips on any write error so the prediction flow is never interrupted.
-    """
-    try:
-        records = load_history()
-        records.append(record)
-        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(records, f, indent=2, ensure_ascii=False)
-    except OSError:
-        pass  # never crash the prediction flow due to history write failure
+    """Insert one prediction record into Supabase for the current user."""
+    database.save_history(record, current_user_id())
 
 
 def clear_history() -> None:
-    """Delete all stored prediction records by overwriting with an empty list."""
-    try:
-        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump([], f)
-    except OSError:
-        pass
+    """Delete all predictions for the current user from Supabase."""
+    database.clear_history(current_user_id())
 
 
 def build_history_record(
@@ -349,7 +326,7 @@ def build_history_record(
     return {
         "timestamp":    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "disease":      disease_name,
-        "prediction":   "Yes ✅" if prediction == 1 else "No 🟢",
+        "prediction":   "Yes " if prediction == 1 else "No ",
         "key_reasons":  key_reasons,
         "input_values": input_dict,
     }
@@ -696,6 +673,10 @@ def render_shap_bar_chart(
     plt.close(fig)
 
 
+def render_disclaimer():
+    st.markdown("""
+    
+    """, unsafe_allow_html=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -743,7 +724,8 @@ def run_prediction_pipeline(
     with st.expander("📊 View Feature Impact Chart", expanded=True):
         render_shap_bar_chart(explanations, disease_name)
 
-   
+    # Medical disclaimer
+    render_disclaimer()
 
     # ── [NEW] Save this prediction to history ─────────────────────────────────
     record = build_history_record(
@@ -790,9 +772,9 @@ def input_grid(features: list, cols: int = 3, hints: dict = None) -> list:
 with st.sidebar:
     st.markdown("""
     <div style='text-align:center; padding: 20px 0 10px 0;'>
-        <div style='font-size:2.5rem;'>🩺</div>
+        <div style='font-size:2.5rem;'></div>
         <div style='font-size:1.1rem; font-weight:700; color:#f1f5f9; margin-top:8px;'>
-            Multi Diseases prediction using SHAP
+            Multi Diseases Prediction Using SHAP
         </div>
         <div style='font-size:0.78rem; color:#94a3b8; margin-top:4px;'>
             Explainable Disease Prediction
@@ -800,39 +782,63 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
 
-    selected = option_menu(
-        menu_title=None,
-        options=["Diabetes", "Heart Disease", "Parkinson's", "History"],
-        icons=["droplet-fill", "heart-pulse-fill", "person-lines-fill", "clock-history"],
-        default_index=0,
-        styles={
-            "container":    {"background-color": "transparent", "padding": "0"},
-            "icon":         {"color": "#60a5fa", "font-size": "16px"},
-            "nav-link":     {
-                "font-size": "0.9rem",
-                "color": "#cbd5e1",
-                "padding": "12px 16px",
-                "border-radius": "8px",
-                "margin": "2px 0",
-            },
-            "nav-link-selected": {
-                "background-color": "#1d4ed8",
-                "color": "white",
-                "font-weight": "600",
-            },
-        },
-    )
+    # ── [AUTH] Show user widget + logout only when authenticated ──────────────
+    if is_authenticated():
+        render_sidebar_user_widget()
+        st.markdown("<hr style='border-color:#334155; margin:12px 0'>",
+                    unsafe_allow_html=True)
 
-    st.markdown("<hr style='border-color:#334155; margin:16px 0'>", unsafe_allow_html=True)
-    st.markdown("""
-    <div style='font-size:0.78rem; color:#64748b; padding:0 4px;'>
-        <b style='color:#94a3b8;'>How it works:</b><br><br>
-        1️⃣ Enter your health values<br><br>
-        2️⃣ Click <b>Predict</b><br><br>
-        3️⃣ Get prediction + plain-English explanation powered by SHAP<br><br>
-        4️⃣ View all past predictions in <b>History</b>
-    </div>
-    """, unsafe_allow_html=True)
+        selected = option_menu(
+            menu_title=None,
+            options=["Diabetes", "Heart Disease", "Parkinson's", "History"],
+            icons=["droplet-fill", "heart-pulse-fill",
+                   "person-lines-fill", "clock-history"],
+            default_index=0,
+            styles={
+                "container":    {"background-color": "transparent", "padding": "0"},
+                "icon":         {"color": "#60a5fa", "font-size": "16px"},
+                "nav-link":     {
+                    "font-size": "0.9rem",
+                    "color": "#cbd5e1",
+                    "padding": "12px 16px",
+                    "border-radius": "8px",
+                    "margin": "2px 0",
+                },
+                "nav-link-selected": {
+                    "background-color": "#1d4ed8",
+                    "color": "white",
+                    "font-weight": "600",
+                },
+            },
+        )
+
+        st.markdown("<hr style='border-color:#334155; margin:16px 0'>",
+                    unsafe_allow_html=True)
+        st.markdown("""
+        <div style='font-size:0.78rem; color:#64748b; padding:0 4px;'>
+            <b style='color:#94a3b8;'>How it works:</b><br><br>
+            1️⃣ Enter your health values<br><br>
+            2️⃣ Click <b>Predict</b><br><br>
+            3️⃣ Get prediction + plain-English explanation powered by SHAP<br><br>
+            4️⃣ View all past predictions in <b>History</b>
+        </div>
+        """, unsafe_allow_html=True)
+
+    else:
+        # Not logged in — show minimal sidebar
+        selected = None
+        st.markdown("""
+        <div style='font-size:0.82rem; color:#64748b; padding:8px 4px;'>
+            Please <b style='color:#94a3b8;'>log in</b> or
+            <b style='color:#94a3b8;'>sign up</b> to use the app.
+        </div>
+        """, unsafe_allow_html=True)
+
+
+# ── [AUTH] Gate: show auth page if not logged in ──────────────────────────────
+if not is_authenticated():
+    render_auth_page()
+    st.stop()   # Stop executing the rest of the app
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -843,7 +849,7 @@ with st.sidebar:
 # DIABETES
 # ─────────────────────────────────────
 if selected == "Diabetes":
-    st.markdown('<p class="page-title">🩸 Diabetes Risk Prediction</p>', unsafe_allow_html=True)
+    st.markdown('<p class="page-title">Diabetes Risk Prediction</p>', unsafe_allow_html=True)
     st.markdown(
         '<p class="page-subtitle">Enter patient health metrics below. '
         'The AI will predict diabetes risk and explain the key contributing factors.</p>',
@@ -889,7 +895,7 @@ if selected == "Diabetes":
 # HEART DISEASE
 # ─────────────────────────────────────
 elif selected == "Heart Disease":
-    st.markdown('<p class="page-title">❤️ Heart Disease Risk Prediction</p>', unsafe_allow_html=True)
+    st.markdown('<p class="page-title"> Heart Disease Risk Prediction</p>', unsafe_allow_html=True)
     st.markdown(
         '<p class="page-subtitle">Enter cardiac health metrics. '
         'The AI will predict heart disease risk and explain the reasoning.</p>',
@@ -943,7 +949,7 @@ elif selected == "Heart Disease":
 # PARKINSON'S DISEASE
 # ─────────────────────────────────────
 elif selected == "Parkinson's":
-    st.markdown("<p class='page-title'>🧠 Parkinson's Disease Prediction</p>", unsafe_allow_html=True)
+    st.markdown("<p class='page-title'>Parkinson's Disease Prediction</p>", unsafe_allow_html=True)
     st.markdown(
         "<p class='page-subtitle'>Enter vocal measurement features. "
         "The AI will predict Parkinson's risk and explain the contributing voice biomarkers.</p>",
